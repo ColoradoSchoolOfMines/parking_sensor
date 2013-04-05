@@ -35,6 +35,14 @@ class Statistic
         float unbiased_stdev();
 #endif
 
+#ifdef STAT_CIRCULAR
+#ifndef STAT_CIRC_SIZE
+#define STAT_CIRC_SIZE 300
+#endif
+        float _vals[STAT_BUF_SIZE];
+        unsigned short _vptr;
+#endif
+
 protected:
         long _cnt;
         float _store;           // store to minimise computation

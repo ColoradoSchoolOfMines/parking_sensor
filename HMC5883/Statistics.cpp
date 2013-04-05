@@ -72,6 +72,16 @@ void Statistic::add(float f)
           if (f > _max) _max = f;          
         } // end of if (_cnt == 0) else
         _sum += f;
+
+#ifdef STAT_CIRCULAR
+        if (_cnt >= STAT_CIRC_SIZE)
+        {
+            _sum -= _vals[_vptr];
+        }
+
+        _vals[_vptr++] = f;
+#endif
+
         _cnt++;
 #ifdef STAT_USE_STDEV
         if (_cnt >1) {
