@@ -36,9 +36,15 @@ class Statistic
 #endif
 
 #ifdef STAT_CIRCULAR
+
 #ifndef STAT_CIRC_SIZE
 #define STAT_CIRC_SIZE 300
 #endif
+
+#if STAT_CIRC_SIZE > 65536
+#define STAT_CIRC_SIZE 65536
+#endif
+
         float _vals[STAT_BUF_SIZE];
         unsigned short _vptr;
 #endif
