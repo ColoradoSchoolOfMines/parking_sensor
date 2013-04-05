@@ -46,7 +46,7 @@ class Statistic
 #endif
 
         float _vals[STAT_BUF_SIZE];
-        unsigned short _vptr;
+        unsigned short _vptr = 0;
 #endif
 
 protected:
