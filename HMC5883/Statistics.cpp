@@ -1,6 +1,6 @@
 //
 //    FILE: Statistic.cpp
-//  AUTHOR: Rob dot Tillaart at gmail dot com  
+//  AUTHOR: Rob dot Tillaart at gmail dot com
 //          modified at 0.3 by Gil Ross at physics dot org
 // VERSION: see STATISTIC_LIB_VERSION in .h
 // PURPOSE: Recursive statistical library for Arduino
@@ -69,14 +69,15 @@ void Statistic::add(float f)
                 _max = f;
         } else {
           if (f < _min) _min = f;
-          if (f > _max) _max = f;          
+          if (f > _max) _max = f;
         } // end of if (_cnt == 0) else
         _sum += f;
 
 #ifdef STAT_CIRCULAR
-        if (_cnt >= STAT_CIRC_SIZE)
-        {
+        if (_cnt >= STAT_CIRC_SIZE) {
             _sum -= _vals[_vptr];
+        } else {
+            _cnt++;
         }
 
         _vals[_vptr++] = f;
@@ -84,9 +85,11 @@ void Statistic::add(float f)
         if (_vptr == STAT_CIRC_SIZE) {
             _vptr = 0;
         }
+
+#else
+        _cnt++;
 #endif
 
-        _cnt++;
 #ifdef STAT_USE_STDEV
         if (_cnt >1) {
            _store = (_sum / _cnt - f);
@@ -129,7 +132,7 @@ float Statistic::maximum()
 
 // Population standard deviation = s = sqrt [ S ( Xi - µ )2 / N ]
 // http://www.suite101.com/content/how-is-standard-deviation-used-a99084
-#ifdef STAT_USE_STDEV  
+#ifdef STAT_USE_STDEV
 float Statistic::pop_stdev()
 {
         if (_cnt < 1) return NAN; // otherwise DIV0 error
