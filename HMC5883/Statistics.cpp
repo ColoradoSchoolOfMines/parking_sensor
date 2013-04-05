@@ -80,6 +80,10 @@ void Statistic::add(float f)
         }
 
         _vals[_vptr++] = f;
+
+        if (_vptr == STAT_CIRC_SIZE) {
+            _vptr = 0;
+        }
 #endif
 
         _cnt++;
