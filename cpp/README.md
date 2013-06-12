@@ -16,3 +16,6 @@ Using datasets taken at the CTLM exits and entrances, it can correctly calculate
 
 Compiled in Sublime 2.0
 
+MatlabScripts
+===============
+The Matlab scripts help for analysis of data plotted in 3d and 2d, with code for moving average windows as well as commented code for hamming windows if periodic functions start showing up that we can filter the f* out.  :)
