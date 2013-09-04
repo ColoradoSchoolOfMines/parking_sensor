@@ -1,11 +1,18 @@
+//SensorAlgorithm-Shape.cpp
 //This is a c++ algorithm for detecting cars using the HMC magnetometer sensor data taken 5.10.13
 //The script is <will be> designed to re-calibrate the 'baseline' being used as the baseline values every 10 minutes.
 //There is also a moving average aglorithm to smooth out noise. Currently this only uses the X axis data (as that may be all we need)
 //Using datasets taken at the CTLM exits and entrances, it correctly calculates entrances and exits.
+
+//Idea: 6.9.13.  Take the area under the 'event' curve, and compare that to a known area of a confirmed hit
+// or build a vector of slopes.  compare this vector to a known set of slopes, then if it's close (say two std devs)
+//, count up these 'hits'.  If it crosses a threshold, the overal shape of the graph should match and give positive info.
+//Exactly similar to how if you asked a human to 're-draw' a graph, they would look a the curve, and attempt to replicate
+//it's more predominate features.
 //Compiled in Sublime 2.0
+
 //Author: Roy Stillwell, Colorado School of Mines
-//5.24.13 - started
-//7.9.13 Last update 
+//6.14.13 
 
 
 #include <iostream>
@@ -36,8 +43,9 @@ int main ()
   int windowTotal = 0, count = 0, detectorCount = 0;
   int baseline[baselineSize];
   std::queue<int> window;
+  std::vector<> vectorOfShitIveSeen;
+  std::vector<int> tempv;
 
-  struct timeval tv;
 
   while (infile >> x >> y >> z)
   {
@@ -51,6 +59,7 @@ int main ()
       window.push(x);
       windowTotal += x;
     } else {
+   	  //Window is big enough. 	
       //calculate running average 
       windowTotal -= window.front();
       windowTotal += x;
@@ -87,15 +96,14 @@ int main ()
     bool car = false;
 
     //Algorithm to Calculate if car was found
-    //Idea: 7.9.13.  Take the area under the 'event' curve, and compare that to a known area of a confirmed hit
-    // or build a vector of slopes.  compare this vector to a known set of slopes, then if it's close (say two std devs)
-    //, count up these 'hits'.  If it crosses a threshold, the overal shape of the graph should match and give positive info.
-    //Exactly similar to how if you asked a human to 're-draw' a graph, they would look a the curve, and attempt to replicate
-    //it's more predominate features.
+
 
     //This algorithm calculates an in or an out, and based on this
     if ( didWeCalculateTheStdDevAlready == true && (movingAveX > (avg + stdDevThreshold * stdDev) || movingAveX < (avg - stdDevThreshold * stdDev))) {
       car = true;
+      //Build detection array
+
+
 
       //The count detects how many hits were recorded, once it's above 10, we count it as a positive record
         if ( detectorCount < windowSize) {
@@ -103,6 +111,13 @@ int main ()
 
         } else if (detectorCount == windowSize && saidit==false) {
           saidit = true;
+          cout << "car officially here." << endl;
+          std::queue<int> tempwindow = window;
+          for(i=0;i < wwindowSize; i++) {
+ 
+          }
+
+          //logic to determine direction
           if (movingAveX-avg < 0) {
             cout << "time(x40ms):" <<count << " car heading in!" << endl;
           } else {
@@ -111,16 +126,25 @@ int main ()
         }
 
 
-      // cout << count << " " << x << " moving ave: "<< movingAveX << " " << 
-      // y << " " << z  << " " <<  avg << " " << movingAveX-avg << " " << stdDev << " "<< runningAreaX << " " << 
-      // detectorCount << endl;
+      cout << count << " " << x << " moving ave: "<< movingAveX << " " << 
+      y << " " << z  << " " <<  avg << " " << movingAveX-avg << " " << stdDev << " "<< runningAreaX << " " << 
+      detectorCount << endl;
 
     } else {
-      if (detectorCount > 0) detectorCount--;
-      if (detectorCount == 0) saidit = false;
-      // cout << count << " " << x << " moving ave: "<< movingAveX << " " << 
-      // y << " " << z  << " " <<  avg << " " << movingAveX-avg << " " << stdDev << " "<< runningAreaX << " " << 
-      // detectorCount << endl;
+      if (detectorCount > 0) { 
+      	detectorCount--;
+      	      cout << count << " " << x << " moving ave: "<< movingAveX << " " << 
+      y << " " << z  << " " <<  avg << " " << movingAveX-avg << " " << stdDev << " "<< runningAreaX << " " << 
+      detectorCount << endl;
+      	if (detectorCount==0) {
+      		car = false;
+      		cout << "car left" << endl;
+
+      	}
+      }
+      if (detectorCount == 0) {
+      	saidit = false;}
+
     }
     
 
