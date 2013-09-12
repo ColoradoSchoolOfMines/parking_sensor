@@ -66,19 +66,24 @@ using namespace std;
 //----------Variables you can change--------------------
 double recalibrateTime = 600000; //time in seconds. 600000 = 10 min -- used to auto-recalibrate sensor, if time is greater than 10 minutes, recalibrate
 #define baselineSize 100  //Size of baseline to use for baseline values
-int windowSize = 20;  //Size of 'window' to use for moving average to smooth values. See 'moving averages' in wikipedia
-double stdDevThreshold = 6.0; //Used to sort out car 'hits'. Anything above this 'threshold' is counted as a hit
+#define windowSize 30  //Size of 'window' to use for previous values of the sensor to be considered in calculating a positive detection.
+double carThreshold = 50.0; //Used to sort out car 'hits'. Anything above this 'threshold' is counted as a hit
+double pingTime = 60; //(in seconds) Used to make sure sensor is still alive after specified time
 //------------------------------------------------------
 
+double pingCounter;    //Used to count cycles so system can 'ping' basestation every 30 seconds
+int localCarCount=0;
 long startTime ;                    // start time for the algorithm watch
 long elapsedTime ;                  // elapsed time for the algorithm
 bool didWeCalculateTheStdDevAlready, saidit = false;
-double lastCalibrateTime, stdDev, runningAreaX, runningAreaZ;
+double lastCalibrateTime, stdDev;
 double avg = 0;
-int x, y, z, movingAveX, lastmovingAvgX;
+float calibrationPercentDone;
+int x, y, z;
 int windowTotal = 0, count = 0, detectorCount = 0;
 int baseline[baselineSize];
-QueueList<int> window;
+int window[windowSize];
+//QueueList<int> previousValues;
 
 //struct timeval tv;
 
@@ -92,6 +97,8 @@ QueueList<int> window;
 void setup(){
   //Initialize Serial and I2C communications
   Serial.begin(57600);
+  Serial.print(255);
+
   Wire.begin();
 
   //Put the HMC5883 IC into the correct operating mode
@@ -115,12 +122,12 @@ void setup(){
     y = Wire.read()<<8; //Y msb
     y |= Wire.read(); //Y lsb
   }
-   delay(1000);
+  delay(1000);
   // Serial.println('Initializing...');
 }
 
 void loop(){
-  
+
   //Tell the HMC5883 where to begin reading data
   Wire.beginTransmission(address);
   Wire.write(0x03); //select register 3, X MSB register
@@ -140,26 +147,34 @@ void loop(){
 
   //build the baseline array to be used for standard deviation calculation
   if (count < baselineSize) {
-    baseline[count] = x;
-    delay(40);
-    count++;
+    baseline[count] = y;
+
+    //Echo out to serial how far we are in calibrationg.
+    double calibrationPercentDone =  baselineSize;
+    calibrationPercentDone = count / calibrationPercentDone * 100;
+    Serial.print("Hang on, Calibrating ");
+    Serial.print(calibrationPercentDone);
+    Serial.println("% done. ");
+
+    delay(40);  //Pause for a bunch of cycles so the values are collected over a few seconds.
+    count++; //increment counter to fill buffer of size 'baselineSize'
   }
 
   //fill the initial window used for smoothing data
-  if (count < windowSize) {
-    window.push(x);
-    windowTotal += x;
-  } 
-  else {
-
-    //calculate running average 
-    windowTotal -= window.peek();
-    windowTotal += x;
-    window.push(x);
-    window.pop();
-    movingAveX = windowTotal / windowSize;
-
-  }
+  //  if (count < windowSize) {
+  //    window.push(x);
+  //    windowTotal += x;
+  //  } 
+  //  else {
+  //
+  //    //calculate running average 
+  //    windowTotal -= window.peek(); //I don't think this code is doing what it is supposed to be doing :)
+  //    windowTotal += x;
+  //    window.push(x);
+  //    window.pop();
+  //    movingAveX = windowTotal / windowSize;
+  //
+  //  }
 
   //Figure out baseline values
   if (count == baselineSize && didWeCalculateTheStdDevAlready == false) {  //The baseline array is full, so we can run the std deviation calculation
@@ -169,20 +184,20 @@ void loop(){
     startTime = millis(); 
   }
 
-//  elapsedTime = millis() - startTime;
-//  //TODO: write recalibration code
-//  if (elapsedTime > recalibrateTime) {
-//    //look to recalibrate by building a new temp array
-//
-//    //check standard deviation of new array against current standard deviation
-//    //if within limits, use the new calibration data
-//    Serial.println("Uh hang on a minute, recalibrating.");
-//    startTime = millis();
-//    count = 0;
-//  }
+  //  elapsedTime = millis() - startTime;
+  //  //TODO: write recalibration code
+  //  if (elapsedTime > recalibrateTime) {
+  //    //look to recalibrate by building a new temp array
+  //
+  //    //check standard deviation of new array against current standard deviation
+  //    //if within limits, use the new calibration data
+  //    Serial.println("Uh hang on a minute, recalibrating.");
+  //    startTime = millis();
+  //    count = 0;
+  //  }
 
 
-  bool something = false;
+  bool something = false;  //used to flag whether or not something is over the sensor
 
 
   //Idea: 7.9.13. NOT IMPLEMENTED HERE, JUST A COOLER IDEA.  
@@ -195,59 +210,71 @@ void loop(){
 
   //This algorithm calculates whether 'something' was found, and then to be sure, starts a detectorCount to verify
   //there are enough hits to constitute an actual car passing.
-  if ( didWeCalculateTheStdDevAlready == true && (x > (avg + stdDevThreshold) || x < (avg - stdDevThreshold))) {
-    something = true;
-   // Serial.print('Uh something found, listening...');
+  if ( didWeCalculateTheStdDevAlready == true && (y >= (avg + carThreshold) || y <= (avg - carThreshold))) {
+
+    something = true;  //something is probably out there!
+
+    //delay(40);
 
     //When 'something' may be out there, there are three scenarios.  
     //1) The detector count goes up if there are less 'something' hits than the window size,
     //2) The detector count hits the windows size -what we qualify as a true car over the sensor!- and as such reports it,
     //3) There wasn't a new event, and the detector count is decremented.  Once it hits zero, the car is thought to have passed the sensor
     // Effectively, while a car is over the sensor, detectorCount stops counting, and sort of cruises at the max window size.  As the car passes
-    //and sensor values drop to the nominal baseline, it starts clearing teh detectorCount buffer and readies for a new car.
-    if ( detectorCount < windowSize) {
-      // 1) Something may be in the works, we need to count the 'something' events to be sure
-      detectorCount++;
+    //and sensor values drop to the nominal baseline, it starts clearing the detectorCount buffer and readies for a new car.
 
-    } 
-    else if (detectorCount == windowSize && saidit==false) {
+    // 1) Something may be in the works, we need to count the 'something' events to be sure and store it in the window
+    // We will use the detectorCount as the indexer
+    if (detectorCount <= windowSize) {
+      window[detectorCount] = y;  //We add the current value to the window, for analysis later
+    }
+    detectorCount++;
+    Serial.print("something is here(diff from avg):");
+    Serial.print(avg-y);
+    Serial.print(" localCarCount:");
+    Serial.print(localCarCount);
+    Serial.print(" detectorCount:");
+    Serial.println(detectorCount);  //This should show then how many 'hits' are counted when a vehicle drives over sensor
+
+    // } else 
+    if (detectorCount >= windowSize && saidit==false) {
       // 2) We have officially detected a vehicle!
-      saidit = true;
       
-      //If the moving average is lower than the baseline average, the car is heading in
-      if (movingAveX-avg < 0) {
-        Serial.print("time(x40ms): ");
-        Serial.print(count); 
-        Serial.println(" car heading in!"); 
+      //We use the first 25% of values to determine direction (the magnetometer values are indicative of direction).
+      double windowAve;
+      int top25Percent = windowSize/4;
+      for (int i=0; i < (top25Percent); i++) {
+        windowAve += window[i]; //add up all the values
+        Serial.println(window[i]);
+      }
+      windowAve = windowAve / top25Percent;
+      Serial.print("windowAve: ");
+      Serial.print(windowAve);
+      Serial.print(" avg: ");
+      Serial.print(avg);
+      Serial.print(" top25Percent:");
+      Serial.println(top25Percent);
+    
+      //If the window average is lower than the baseline average, the car is heading in
+      if (windowAve-avg < 0) {
+        localCarCount++;
+        Serial.print("Car heading in! localCarCount:"); 
+        Serial.println(localCarCount);
+        delay(40);
+        pingCounter = 0; // Device has communicated with the base station, so reset counter for communication
       } 
       //Otherwise the car was heading out!
       else {
-        Serial.print("time(x40ms): ");
-        Serial.print(count); 
-        Serial.println(" car heading out!"); 
+        localCarCount--;
+        Serial.print(" car heading out: localCarCount:"); 
+        Serial.println(localCarCount);
+        delay(40);
+            pingCounter = 0; // Device has communicated with the base station, so reset counter for communication
       }
+      
+      saidit = true; //mark that we have said there is a car already, so we don't repeat it
     }
-//
-    Serial.print(count);
-    Serial.print(" avg ");
-    Serial.print(avg);
-        Serial.print(" stdDev ");
-    Serial.print(stdDev);
-    Serial.print(" ActualX ");
-    Serial.print(x);
-    Serial.print(" MovingAveX: ");
-    Serial.print(movingAveX);
-    Serial.print(" movingAveX-avg ");
-    Serial.print(movingAveX-avg);
-    
-    Serial.print(" detectorCount ");
-    Serial.println(detectorCount);
-    
-    delay(40);
-    
-    // cout << count << " " << x << " moving ave: "<< movingAveX << " " << 
-    // y << " " << z  << " " <<  avg << " " << movingAveX-avg << " " << stdDev << " "<< runningAreaX << " " << 
-    // detectorCount << endl;
+
 
   } 
   else {
@@ -255,24 +282,34 @@ void loop(){
     if (detectorCount > 0) detectorCount--;
     //Once it zero, the algorithm is essentially ready for a new car.
     if (detectorCount == 0) saidit = false;
-    
+
+    //This code does is used for diagnostics.  it pings the server every so often to be sure it is working
+    if (pingCounter >= (pingTime*860)) { //860 is about 1 second with this program code 
+      //To be sure everything is working (mostly for diagnostics, ping every 30 seconds).
+      Serial.print("All Still Quiet. localCarCount:");
+      Serial.println(localCarCount);
+      pingCounter = 0;
+      //delay(40);
+    }
+    pingCounter++;  
     //legacy c++ code for reference.
     // cout << count << " " << x << " moving ave: "<< movingAveX << " " << 
     // y << " " << z  << " " <<  avg << " " << movingAveX-avg << " " << stdDev << " "<< runningAreaX << " " << 
     // detectorCount << endl;
   }
 
-  //This block of code will print the raw data from the sensors. 
+//  //This block of code will print the raw data from the sensors. 
 //    Serial.print(x);
 //    Serial.print(" ");
 //    Serial.print(y);
 //    Serial.print(" ");
 //    Serial.println(z);
-//  
+//Serial.println("hello");
 //
 //  //add this delay if reading raw data from the serial port. If not, the data comes in way too fast!
-//  delay(40);
+// delay (40);
 }
+
 
 
 
