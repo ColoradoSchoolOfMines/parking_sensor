@@ -2,9 +2,9 @@
 
 /*
 Arduino, HMC5883, magnetometer, XBee code 
- by: Roy Stillwell
+ by: Roy Stillwell, Andrew Wilson
  Colorado School of Mines
- created on: 3.30.13
+ created on: 10.30.13
  license: This work is licensed under a Creative Commons Attribution license.
  
  Arduino code example for interfacing with the HMC5883 
@@ -21,91 +21,119 @@ Arduino, HMC5883, magnetometer, XBee code
  http://tomorrow-lab.com
  
  
- */
-
-//#include <EEPROM.h> // include these to store the data in the eeprom, current code does not implement
-//#include "EEPROMAnything.h" // include these to store the data in the eeprom, current code does not implement
-
-
-/* This is an arduino sketch for detecting cars and their direction using the HMC5883 magnetometer sensor.
- This code was developed using data taken 5.10.13 Colorado School of Mines CTLM parking lot.
- 
  ******************
  HOW IT WORKS:
  ******************
  
  An array of 'baseline' or nominal values -essentially when the sensor does NOT have a vehicle over it- is gathered initially. 
  This baseline can be 'sized' to allow for fine tuning using the 'baselineSize' variable in the 'Variables you can change' section.
- The standard deviation is developed from this baseline of values to compare future values to. After the initial buffer is filled and the 
- standard deviation is found, The 'window' is built.  The windows uses a moving average algorithm to smooth out noise, to better filter errant data.
- The moving average value is calculated, and compared to the standard deviation.  If it is outside this threshold, a counter is started.  
- Once The counter is larger than the window size ( a very good indication of a car), we have detected a vehicle!  We then grab the last value in 
- the window queue and check to see if it is greater or smaller than the baseline average.  This gives us a direction of the vehicle.  
+ After the initial buffer is filled, its average is calculated. 
+ A sensor value is then read and compared to the average and a threshold.  If it is outside this threshold, a counter is started.  
+ Once The counter is larger than the window size ( a very good indication of a car), we have detected a vehicle! 
+ We then grab the last three values in the window and check to see if it is greater or smaller than the baseline average.  
+ This gives us a direction of the vehicle.  
  
  The code <will be> designed to re-calibrate the 'baseline' every 10 minutes (basically in the event a sensor is hit wiht a solar storm or something).
  
- Currently this only uses the X axis data (as that may be all we need)
+ Currently this only uses the Y axis data (as that may be all we need)
  Using datasets taken at the CTLM exits and entrances, it correctly calculates entrances and exits.
- Compiled originally in Sublime 2.0, now in processing with the arduino compiler
  
- **************************************
- Updates
- ------------
- 5.24.13 - designed algorithm from data taken from CTLM lot on 5.10.13. Roy Stillwell
- 7.9.13 Last update to c++ code. Roy Stillwell
- 8.13.13 Added code from c++ algorithm to this arduino sketch. Updated documentation. Roy Stillwell
- *************************************
  */
 
 #include <Wire.h> //I2C Arduino Library, required for interface communication with HMC5883 Device
 #include "stats.h"  //a custom library for doing Average and Standard deviation calculations.
 #include <cmath>  //Standard cmath library
-#include <QueueList.h> // A custom Queue library required for queue manipulation for the running average window.
 using namespace std;
+#include <avr/wdt.h>
+#include <avr/sleep.h>
+#include <avr/interrupt.h>
+
 
 //----------Variables you can change--------------------
 double recalibrateTime = 600000; //time in seconds. 600000 = 10 min -- used to auto-recalibrate sensor, if time is greater than 10 minutes, recalibrate
 #define baselineSize 100  //Size of baseline to use for baseline values
 #define windowSize 30  //Size of 'window' to use for previous values of the sensor to be considered in calculating a positive detection.
-double carThreshold = 50.0; //Used to sort out car 'hits'. Anything above this 'threshold' is counted as a hit
+#define windowConsidered 3 //Consider the first n numbers in window to determine direction
+double carThreshold = 15.0; //Used to sort out car 'hits'. Anything above or below this 'threshold' is counted as a hit
 double pingTime = 60; //(in seconds) Used to make sure sensor is still alive after specified time
 //------------------------------------------------------
+
+
+const int ledPin = 13;
+const int XBeeSleep = 2;               // Connect to XBee DTR for hibernation mode
+const int waitPeriod = 1;              // Number of 8 second cycles before waking
+// up XBee and sending data (8*8 = 64 seconds)
+// Variable Definition
+
+float Vcc = 0.0;
+float Temp = 0.0;
 
 double pingCounter;    //Used to count cycles so system can 'ping' basestation every 30 seconds
 int localCarCount=0;
 long startTime ;                    // start time for the algorithm watch
 long elapsedTime ;                  // elapsed time for the algorithm
-bool didWeCalculateTheStdDevAlready, saidit = false;
+bool didWeCalculateAveDevAlready, saidit = false;
 double lastCalibrateTime, stdDev;
-double avg = 0;
+double baselineAvg = 0;
 float calibrationPercentDone;
 int x, y, z;
 int windowTotal = 0, count = 0, detectorCount = 0;
 int baseline[baselineSize];
 int window[windowSize];
-//QueueList<int> previousValues;
-
-//struct timeval tv;
-
-//#define MEM_SIZE 512 //EEPROM memory size (remaining 2 bytes reserved for count) //needed for storing values in eeprom if needed.  Not currently in use.
+int windowx[windowSize];
+int windowz[windowSize];
 
 #define address 0x1E //0011110b, I2C 7bit address of HMC5883
 
-//int pointer = 0;
-//int x,y,z; //triple axis data
 
-void setup(){
-  //Initialize Serial and I2C communications
-  Serial.begin(57600);
-  Serial.print(255);
+// See: http://code.google.com/p/tinkerit/wiki/SecretVoltmeter
+float readVcc() {
+  signed long resultVcc;
+  float resultVccFloat;
+  // Read 1.1V reference against AVcc
+  ADMUX = _BV(REFS0) | _BV(MUX3) | _BV(MUX2) | _BV(MUX1);
+  delay(10);                           // Wait for Vref to settle
+  ADCSRA |= _BV(ADSC);                 // Convert
+  while (bit_is_set(ADCSRA,ADSC));
+  resultVcc = ADCL;
+  resultVcc |= ADCH<<8;
+  resultVcc = 1126400L / resultVcc;    // Back-calculate AVcc in mV
+  resultVccFloat = (float) resultVcc / 1000.0; // Convert to Float
+  return resultVccFloat;
+}
 
-  Wire.begin();
+// See: http://code.google.com/p/tinkerit/wiki/SecretThermometer
+float readTemp() {
+  signed long resultTemp;
+  float resultTempFloat;
+  // Read temperature sensor against 1.1V reference
+  ADMUX = _BV(REFS1) | _BV(REFS0) | _BV(MUX3);
+  delay(10);                           // Wait for Vref to settle
+  ADCSRA |= _BV(ADSC);                 // Convert
+  while (bit_is_set(ADCSRA,ADSC));
+  resultTemp = ADCL;
+  resultTemp |= ADCH<<8;
+  resultTempFloat = (float) resultTemp * 0.9338 - 312.7; // Apply calibration correction (Roy S)
+  resultTempFloat = resultTempFloat * 1.8 + 32.0;  // Convert to F
+  return resultTempFloat;
+}
+
+
+void configureSensor() {
+  Wire.begin(); //Initalize I2C interface in Arduino
 
   //Put the HMC5883 IC into the correct operating mode
   Wire.beginTransmission(address); //open communication with HMC5883
   Wire.write(0x02); //select mode register
   Wire.write(0x00); //continuous measurement mode
   Wire.endTransmission();
+
+  //Crank the speed up to 75Hz read speeds (default is 15Hz)
+  Wire.beginTransmission(address);
+  Wire.write((byte) 0x00);
+  Wire.write((byte) 0x18); //this jumps it to 75Hz
+  Wire.endTransmission();
+  delay(5);
 
   //Tell the HMC5883 where to begin reading data
   Wire.beginTransmission(address);
@@ -122,10 +150,21 @@ void setup(){
     y = Wire.read()<<8; //Y msb
     y |= Wire.read(); //Y lsb
   }
+  //Pause 
   delay(1000);
-  // Serial.println('Initializing...');
+
 }
 
+void setup(){
+  //Initialize Serial speed
+  Serial.begin(57600);
+
+
+  configureSensor();
+
+}
+
+//The main loop to repeat indefinitely
 void loop(){
 
   //Tell the HMC5883 where to begin reading data
@@ -145,76 +184,68 @@ void loop(){
     y |= Wire.read(); //Y lsb
   }
 
-  //build the baseline array to be used for standard deviation calculation
+//Get temp and voltage data
+Vcc = (float) readVcc();
+Temp = (float) readTemp(); //
+
+  //build the baseline array to be used for average calculation
   if (count < baselineSize) {
     baseline[count] = y;
+    if (count == 0) {
+      Serial.println("Calibrating...");
+    }
+      //Echo out to serial how far we are in calibrating.
+      //    double calibrationPercentDone =  baselineSize;
+      //    calibrationPercentDone = count / calibrationPercentDone * 100;
+      //    Serial.print("Hang on, Calibrating ");
+      //    Serial.print(calibrationPercentDone);
+      //    Serial.print("% done. ");
+      //    Serial.print(x);
+      //    Serial.print(" ");
+      //    Serial.print(y);
+      //    Serial.print(" ");
+      //    Serial.println(z);
 
-    //Echo out to serial how far we are in calibrationg.
-    double calibrationPercentDone =  baselineSize;
-    calibrationPercentDone = count / calibrationPercentDone * 100;
-    Serial.print("Hang on, Calibrating ");
-    Serial.print(calibrationPercentDone);
-    Serial.println("% done. ");
+      delay(40);  //Pause for a bunch of cycles so the values are collected over a few seconds.
+      count++; //increment counter to fill buffer of size 'baselineSize'
+      
+      if (count==baselineSize) {
+        Serial.println("Done. Ready to take data.");
+      }
+    }
 
-    delay(40);  //Pause for a bunch of cycles so the values are collected over a few seconds.
-    count++; //increment counter to fill buffer of size 'baselineSize'
-  }
-
-  //fill the initial window used for smoothing data
-  //  if (count < windowSize) {
-  //    window.push(x);
-  //    windowTotal += x;
-  //  } 
-  //  else {
-  //
-  //    //calculate running average 
-  //    windowTotal -= window.peek(); //I don't think this code is doing what it is supposed to be doing :)
-  //    windowTotal += x;
-  //    window.push(x);
-  //    window.pop();
-  //    movingAveX = windowTotal / windowSize;
-  //
-  //  }
+  
 
   //Figure out baseline values
-  if (count == baselineSize && didWeCalculateTheStdDevAlready == false) {  //The baseline array is full, so we can run the std deviation calculation
-    avg = Average(baseline); //get average
-    stdDev = Deviation(baseline, avg); //calculate standard deviation of baseline values
-    didWeCalculateTheStdDevAlready = true;
+  if (count == baselineSize && didWeCalculateAveDevAlready == false) {  //The baseline array is full, so we can begin collecting data!
+    baselineAvg = Average(baseline); //get average
+    
+    didWeCalculateAveDevAlready = true;
     startTime = millis(); 
   }
 
-  //  elapsedTime = millis() - startTime;
-  //  //TODO: write recalibration code
-  //  if (elapsedTime > recalibrateTime) {
-  //    //look to recalibrate by building a new temp array
-  //
-  //    //check standard deviation of new array against current standard deviation
-  //    //if within limits, use the new calibration data
-  //    Serial.println("Uh hang on a minute, recalibrating.");
-  //    startTime = millis();
-  //    count = 0;
-  //  }
+//  elapsedTime = millis() - startTime;
+//  //TODO: write recalibration code
+//  if (elapsedTime > recalibrateTime) {
+//    //look to recalibrate by building a new temp array
+//
+//    //check standard deviation of new array against current standard deviation
+//    //if within limits, use the new calibration data
+//    Serial.println("Uh hang on a minute, recalibrating.");
+//    startTime = millis();
+//    count = 0;
+//  }
 
 
   bool something = false;  //used to flag whether or not something is over the sensor
 
-
-  //Idea: 7.9.13. NOT IMPLEMENTED HERE, JUST A COOLER IDEA.  
-  //Take the area under the 'event' curve, and compare that to a known area of a confirmed hit
-  // or build a vector of slopes.  compare this vector to a known set of slopes, then if it's close (say two std devs)
-  //, count up these 'hits'.  If it crosses a threshold, the overal shape of the graph should match and give positive info.
-  //Exactly similar to how if you asked a human to 're-draw' a graph, they would look a the curve, and attempt to replicate
-  //it's more predominate features.
-
-
   //This algorithm calculates whether 'something' was found, and then to be sure, starts a detectorCount to verify
-  //there are enough hits to constitute an actual car passing.
-  if ( didWeCalculateTheStdDevAlready == true && (y >= (avg + carThreshold) || y <= (avg - carThreshold))) {
+  //there are enough hits to constitute an actual car passing, and not some random flux in the Earth's field.
+  if ( didWeCalculateAveDevAlready == true && (y >= (baselineAvg + carThreshold) || y <= (baselineAvg - carThreshold))) {
 
     something = true;  //something is probably out there!
 
-    //delay(40);
+    delay(14); //The HMC is set to run at 75Hz, this delays just that amount!
 
     //When 'something' may be out there, there are three scenarios.  
     //1) The detector count goes up if there are less 'something' hits than the window size,
@@ -227,88 +258,90 @@ void loop(){
     // We will use the detectorCount as the indexer
     if (detectorCount <= windowSize) {
       window[detectorCount] = y;  //We add the current value to the window, for analysis later
+      windowx[detectorCount] = x;
+      windowz[detectorCount] = z;
     }
-    detectorCount++;
-    Serial.print("something is here(diff from avg):");
-    Serial.print(avg-y);
-    Serial.print(" localCarCount:");
-    Serial.print(localCarCount);
-    Serial.print(" detectorCount:");
-    Serial.println(detectorCount);  //This should show then how many 'hits' are counted when a vehicle drives over sensor
+    detectorCount++;  
 
-    // } else 
-    if (detectorCount >= windowSize && saidit==false) {
-      // 2) We have officially detected a vehicle!
-      
-      //We use the first 25% of values to determine direction (the magnetometer values are indicative of direction).
+    if (detectorCount >= windowSize && saidit==false) { //here we check to see if we have detected enough events
+      //We did detect a car! Now to see direction
       double windowAve;
-      int top25Percent = windowSize/4;
-      for (int i=0; i < (top25Percent); i++) {
+
+      for (int i=0; i < windowConsidered; i++) { //using the first few values of the window (the orignal direction of the Magfield)
+        //we find the direction.
         windowAve += window[i]; //add up all the values
-        Serial.println(window[i]);
       }
-      windowAve = windowAve / top25Percent;
-      Serial.print("windowAve: ");
-      Serial.print(windowAve);
-      Serial.print(" avg: ");
-      Serial.print(avg);
-      Serial.print(" top25Percent:");
-      Serial.println(top25Percent);
-    
-      //If the window average is lower than the baseline average, the car is heading in
-      if (windowAve-avg < 0) {
-        localCarCount++;
-        Serial.print("Car heading in! localCarCount:"); 
-        Serial.println(localCarCount);
-        delay(40);
+      windowAve = windowAve / windowConsidered;  //generate the average value to be used
+
+        //If the first value is less than the average, we have a car heading in! So transmit!
+      if (windowAve < baselineAvg  ) {
+        localCarCount++;     
+        // Serial.print("Car heading in! localCarCount:"); 
+        Serial.print(localCarCount); //output car count
+        Serial.print(" ");
+        Serial.print(Vcc); //output battery voltage (in theory)
+        Serial.print(" ");
+        Serial.println(Temp); //output device temp (in theory)
+        
+        //TODO Calibrate temp
+        //TODO verify vcc output is correct
+
+
+        delay(500);
         pingCounter = 0; // Device has communicated with the base station, so reset counter for communication
       } 
-      //Otherwise the car was heading out!
-      else {
+      else {  //Otherwise the car was heading out!
         localCarCount--;
-        Serial.print(" car heading out: localCarCount:"); 
-        Serial.println(localCarCount);
-        delay(40);
-            pingCounter = 0; // Device has communicated with the base station, so reset counter for communication
+        // Serial.print(" car heading out: localCarCount:"); 
+
+        Serial.print(localCarCount); //output car count
+        Serial.print(" ");
+        Serial.print(Vcc); //output battery voltage (in theory)
+        Serial.print(" ");
+        Serial.println(Temp); //output device temp (in theory)
+        
+        //TODO Calibrate temp
+        //TODO verify vcc output is correct
+
+        //Serial.print ("Data: ");
+        delay(500);
+        pingCounter = 0; // Device has communicated with the base station, so reset counter for communication
       }
-      
+      //For debugging, we echo the window average and baseline average to makes sure the algorithm is working
+      //        Serial.print("windowAve: ");
+      //        Serial.print(windowAve);
+      //        Serial.print(" baselineAvg: ");
+      //        Serial.println (baselineAvg);
       saidit = true; //mark that we have said there is a car already, so we don't repeat it
     }
 
-
   } 
   else {
-    //3) An event was not detected, so the detectorCount begins decrementing its values
-    if (detectorCount > 0) detectorCount--;
-    //Once it zero, the algorithm is essentially ready for a new car.
-    if (detectorCount == 0) saidit = false;
+        //3) An event was not detected, so the detectorCount begins decrementing its values
+            if (detectorCount > 0) detectorCount--;
+            //Once it zero, the algorithm is essentially ready for a new car.
+            if (detectorCount == 0) saidit = false;
+        
+            //This code does is used for diagnostics.  It essentially sends a 'heartbeat' to the base station
+            if (pingCounter >= (pingTime*200)) { // is about 1 second with this program code 
+              //To be sure everything is working (mostly for diagnostics, ping every 30 seconds).
 
-    //This code does is used for diagnostics.  it pings the server every so often to be sure it is working
-    if (pingCounter >= (pingTime*860)) { //860 is about 1 second with this program code 
-      //To be sure everything is working (mostly for diagnostics, ping every 30 seconds).
-      Serial.print("All Still Quiet. localCarCount:");
-      Serial.println(localCarCount);
-      pingCounter = 0;
-      //delay(40);
-    }
-    pingCounter++;  
-    //legacy c++ code for reference.
-    // cout << count << " " << x << " moving ave: "<< movingAveX << " " << 
-    // y << " " << z  << " " <<  avg << " " << movingAveX-avg << " " << stdDev << " "<< runningAreaX << " " << 
-    // detectorCount << endl;
+              Serial.print("All_Still_Quiet ");
+              Serial.print(localCarCount); //output car count
+              Serial.print(" ");
+              Serial.print(Vcc); //output battery voltage (in theory)
+              Serial.print(" ");
+              Serial.println(Temp); //output device temp (in theory)
+              
+              pingCounter = 0;
+              //delay(40);
+         }
+         pingCounter++;  
   }
 
-//  //This block of code will print the raw data from the sensors. 
-//    Serial.print(x);
-//    Serial.print(" ");
-//    Serial.print(y);
-//    Serial.print(" ");
-//    Serial.println(z);
-//Serial.println("hello");
-//
-//  //add this delay if reading raw data from the serial port. If not, the data comes in way too fast!
-// delay (40);
 }
+
+
 
 
 

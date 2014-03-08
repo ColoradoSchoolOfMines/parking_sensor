@@ -28,3 +28,4 @@ double Deviation(int window[], double ave)
 }
 
 
+
