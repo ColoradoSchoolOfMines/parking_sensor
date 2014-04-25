@@ -1,11 +1,10 @@
-
-
 /*
 Arduino, HMC5883, magnetometer, XBee code 
  by: Roy Stillwell, Andrew Wilson
  Colorado School of Mines
  created on: 10.30.13
  license: This work is licensed under a Creative Commons Attribution license.
+ updated: 3.19.14 Roy Stillwell
  
  Arduino code example for interfacing with the HMC5883 
  by: Jordan McConnell
@@ -43,10 +42,12 @@ Arduino, HMC5883, magnetometer, XBee code
 #include <Wire.h> //I2C Arduino Library, required for interface communication with HMC5883 Device
 #include "stats.h"  //a custom library for doing Average and Standard deviation calculations.
 #include <cmath>  //Standard cmath library
+#include <string>
 using namespace std;
 #include <avr/wdt.h>
 #include <avr/sleep.h>
 #include <avr/interrupt.h>
+
 
 
 //----------Variables you can change--------------------
@@ -59,14 +60,17 @@ double pingTime = 60; //(in seconds) Used to make sure sensor is still alive aft
 //------------------------------------------------------
 
 
+const int battPin = A0;
 const int ledPin = 13;
+const int interruptPin = 12;
 const int XBeeSleep = 2;               // Connect to XBee DTR for hibernation mode
 const int waitPeriod = 1;              // Number of 8 second cycles before waking
 // up XBee and sending data (8*8 = 64 seconds)
 // Variable Definition
 
-float Vcc = 0.0;
-float Temp = 0.0;
+//double Vcc = 0.0;
+double Temp = 0.0;
+double batt = 0.0;
 
 double pingCounter;    //Used to count cycles so system can 'ping' basestation every 30 seconds
 int localCarCount=0;
@@ -75,37 +79,47 @@ long elapsedTime ;                  // elapsed time for the algorithm
 bool didWeCalculateAveDevAlready, saidit = false;
 double lastCalibrateTime, stdDev;
 double baselineAvg = 0;
-float calibrationPercentDone;
+double calibrationPercentDone;
 int x, y, z;
 int windowTotal = 0, count = 0, detectorCount = 0;
 int baseline[baselineSize];
-int window[windowSize];
+int windowy[windowSize];
 int windowx[windowSize];
 int windowz[windowSize];
+String yomama_data;
+
 
 #define address 0x1E //0011110b, I2C 7bit address of HMC5883
 
+String getWindowData(int window[]) {
+  String data = "";
+ for (int i = 0; i < windowSize; i++ ) {
+   data+= String(window[i]) + " ";
+ }
+ return data;
+}
+  
 
 // See: http://code.google.com/p/tinkerit/wiki/SecretVoltmeter
-float readVcc() {
-  signed long resultVcc;
-  float resultVccFloat;
-  // Read 1.1V reference against AVcc
-  ADMUX = _BV(REFS0) | _BV(MUX3) | _BV(MUX2) | _BV(MUX1);
-  delay(10);                           // Wait for Vref to settle
-  ADCSRA |= _BV(ADSC);                 // Convert
-  while (bit_is_set(ADCSRA,ADSC));
-  resultVcc = ADCL;
-  resultVcc |= ADCH<<8;
-  resultVcc = 1126400L / resultVcc;    // Back-calculate AVcc in mV
-  resultVccFloat = (float) resultVcc / 1000.0; // Convert to Float
-  return resultVccFloat;
-}
+//double readVcc() {
+//  signed long resultVcc;
+//  double resultVccFloat;
+//  // Read 1.1V reference against AVcc
+//  ADMUX = _BV(REFS0) | _BV(MUX3) | _BV(MUX2) | _BV(MUX1);
+//  delay(10);                           // Wait for Vref to settle
+//  ADCSRA |= _BV(ADSC);                 // Convert
+//  while (bit_is_set(ADCSRA,ADSC));
+//  resultVcc = ADCL;
+//  resultVcc |= ADCH<<8;
+//  resultVcc = 1126400L / resultVcc;    // Back-calculate AVcc in mV
+//  resultVccFloat = (double) resultVcc / 1000.0; // Convert to Float
+//  return resultVccFloat;
+//}
 
 // See: http://code.google.com/p/tinkerit/wiki/SecretThermometer
-float readTemp() {
+double readTemp() {
   signed long resultTemp;
-  float resultTempFloat;
+  double resultTempFloat;
   // Read temperature sensor against 1.1V reference
   ADMUX = _BV(REFS1) | _BV(REFS0) | _BV(MUX3);
   delay(10);                           // Wait for Vref to settle
@@ -113,11 +127,15 @@ float readTemp() {
   while (bit_is_set(ADCSRA,ADSC));
   resultTemp = ADCL;
   resultTemp |= ADCH<<8;
-  resultTempFloat = (float) resultTemp * 0.9338 - 312.7; // Apply calibration correction (Roy S)
+  resultTempFloat = (double) resultTemp * 0.9338 - 312.7; // Apply calibration correction (Roy S)
   resultTempFloat = resultTempFloat * 1.8 + 32.0;  // Convert to F
   return resultTempFloat;
 }
 
+double readBatt() {
+  batt = analogRead(battPin) * .00324 * 2 ;
+  return batt;
+}
 
 void configureSensor() {
   Wire.begin(); //Initalize I2C interface in Arduino
@@ -158,9 +176,14 @@ void configureSensor() {
 void setup(){
   //Initialize Serial speed
   Serial.begin(57600);
-
-
   configureSensor();
+  
+  pinMode(interruptPin, OUTPUT); 
+  digitalWrite(interruptPin, HIGH); 
+  
+  Serial.print("You have 10 seconds to place sensor");
+  delay(10000);
+  
 
 }
 
@@ -183,10 +206,12 @@ void loop(){
     y = Wire.read()<<8; //Y msb
     y |= Wire.read(); //Y lsb
   }
-
-//Get temp and voltage data
-Vcc = (float) readVcc();
-Temp = (float) readTemp(); //
+  
+  //Get temp and voltage data
+  //Vcc = (double) readVcc();
+  Temp = (double) readTemp(); 
+  batt = (double) readBatt();
+  
 
   //build the baseline array to be used for average calculation
   if (count < baselineSize) {
@@ -242,7 +267,9 @@ Temp = (float) readTemp(); //
   //This algorithm calculates whether 'something' was found, and then to be sure, starts a detectorCount to verify
   //there are enough hits to constitute an actual car passing, and not some random flux in the Earth's field.
   if ( didWeCalculateAveDevAlready == true && (y >= (baselineAvg + carThreshold) || y <= (baselineAvg - carThreshold))) {
-
+//    Serial.print("[something here ");
+//    Serial.print(y);
+//     Serial.println("]");
     something = true;  //something is probably out there!
 
     delay(14); //The HMC is set to run at 75Hz, this delays just that amount!
@@ -257,7 +284,7 @@ Temp = (float) readTemp(); //
     // 1) Something may be in the works, we need to count the 'something' events to be sure and store it in the window
     // We will use the detectorCount as the indexer
     if (detectorCount <= windowSize) {
-      window[detectorCount] = y;  //We add the current value to the window, for analysis later
+      windowy[detectorCount] = y;  //We add the current value to the window, for analysis later
       windowx[detectorCount] = x;
       windowz[detectorCount] = z;
     }
@@ -269,42 +296,61 @@ Temp = (float) readTemp(); //
 
       for (int i=0; i < windowConsidered; i++) { //using the first few values of the window (the orignal direction of the Magfield)
         //we find the direction.
-        windowAve += window[i]; //add up all the values
+        windowAve += windowy[i]; //add up all the values
       }
       windowAve = windowAve / windowConsidered;  //generate the average value to be used
 
         //If the first value is less than the average, we have a car heading in! So transmit!
       if (windowAve < baselineAvg  ) {
-        localCarCount++;     
-        // Serial.print("Car heading in! localCarCount:"); 
+        localCarCount++;   
+      
+        String windowData = getWindowData(windowy);
+        Serial.print("<");
         Serial.print(localCarCount); //output car count
         Serial.print(" ");
-        Serial.print(Vcc); //output battery voltage (in theory)
+        //Serial.print(Vcc); //output battery voltage (in theory)
+        //Serial.print(" ");
+        Serial.print(batt);
         Serial.print(" ");
-        Serial.println(Temp); //output device temp (in theory)
+        Serial.print(Temp); //output device temp (in theory)
+        Serial.print(" ");
+        Serial.print(windowData);
+        Serial.println(">");
         
         //TODO Calibrate temp
-        //TODO verify vcc output is correct
+        //TODO verify vcc output is correct NOTE, it wasn't. went to new 'batt' calculation
 
 
+        digitalWrite(interruptPin, LOW); // send interrupt to Raspberry Pi 
         delay(500);
+        digitalWrite(interruptPin, HIGH);
         pingCounter = 0; // Device has communicated with the base station, so reset counter for communication
       } 
       else {  //Otherwise the car was heading out!
         localCarCount--;
-        // Serial.print(" car heading out: localCarCount:"); 
 
+        //The data packet will automatically be split into 'frames' by the xbee 
+        //so we will 'encpauslate' our data. ex: < data > .
+        String windowData = getWindowData(windowy);
+        Serial.print("<");
         Serial.print(localCarCount); //output car count
         Serial.print(" ");
-        Serial.print(Vcc); //output battery voltage (in theory)
+        //Serial.print(Vcc); //output battery voltage (in theory)
+        //Serial.print(" ");
+        Serial.print(batt);
         Serial.print(" ");
-        Serial.println(Temp); //output device temp (in theory)
+        Serial.print(Temp); //output device temp (in theory)
+        Serial.print(" ");
+        Serial.print(windowData);
+        Serial.println(">");
         
         //TODO Calibrate temp
         //TODO verify vcc output is correct
 
         //Serial.print ("Data: ");
+        digitalWrite(interruptPin, LOW); // send interrupt to Raspberry Pi 
         delay(500);
+        digitalWrite(interruptPin, HIGH);
         pingCounter = 0; // Device has communicated with the base station, so reset counter for communication
       }
       //For debugging, we echo the window average and baseline average to makes sure the algorithm is working
@@ -325,14 +371,21 @@ Temp = (float) readTemp(); //
             //This code does is used for diagnostics.  It essentially sends a 'heartbeat' to the base station
             if (pingCounter >= (pingTime*200)) { // is about 1 second with this program code 
               //To be sure everything is working (mostly for diagnostics, ping every 30 seconds).
-
-              Serial.print("All_Still_Quiet ");
-              Serial.print(localCarCount); //output car count
-              Serial.print(" ");
-              Serial.print(Vcc); //output battery voltage (in theory)
-              Serial.print(" ");
-              Serial.println(Temp); //output device temp (in theory)
-              
+                    //The data packet will automatically be split into 'frames' by the xbee 
+        
+        //so we will 'encpauslate' our data. ex: < data > .
+        String windowData = getWindowData(windowy);
+        Serial.print("<");
+        Serial.print(localCarCount); //output car count
+        Serial.print(" ");
+        //Serial.print(Vcc); //output battery voltage (in theory)
+        //Serial.print(" ");
+        Serial.print(batt);
+        Serial.print(" ");
+        Serial.print(Temp); //output device temp (in theory)
+        Serial.print(" ");
+        Serial.print(windowData);
+        Serial.println(">");
               pingCounter = 0;
               //delay(40);
          }
@@ -340,14 +393,3 @@ Temp = (float) readTemp(); //
   }
 
 }
-
-
-
-
-
-
-
-
-
-
-
