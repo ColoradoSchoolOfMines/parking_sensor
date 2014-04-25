@@ -5,6 +5,7 @@ Arduino, HMC5883, magnetometer, XBee code
  created on: 10.30.13
  license: This work is licensed under a Creative Commons Attribution license.
  updated: 3.19.14 Roy Stillwell
+ updated: 4.25.14 Santiago Gonzalez
  
  Arduino code example for interfacing with the HMC5883 
  by: Jordan McConnell
