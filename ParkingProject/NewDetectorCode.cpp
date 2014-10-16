@@ -6,9 +6,8 @@ using namespace std;
 
 int main() {
     const int CALIBRATION_COUNT = 40;
-    const double ALPHA = 0.01;
+    const double ALPHA = 0.05;
     const int THRESHOLD = 20;
-    const int WINDOW = 25;
     const int TIMEOUT = 20;
 
     int* axis;
