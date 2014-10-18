@@ -9,19 +9,26 @@ int main() {
     const double ALPHA = 0.025;
     const int THRESHOLD = 11;
     const int TIMEOUT = 20;
-
+		
+		// Pointer for the axies in question. axis what we look at to detect a car, directionAxis is what we
+		// look at when trying to determine direction
     int* axis;
 		int* directionAxis;
 
+		//For median Filter, hold the previous value
 		int previousValue;
+		//the window of points for the median filter
 		int window[3]= {0};
 
     ifstream in("data.txt");
 
     int x, y, z;
 
+		//Declare the axies were going to use for magnitude and direction
     axis = &y;
 		directionAxis = &z;
+
+		//varibles for algorithm, note any variable prefixed with direction is for the direction axis.
 
     int count = 0;
     int sum = 0;
@@ -51,12 +58,17 @@ int main() {
         
         
         if ((abs(*axis - average) > THRESHOLD)) {
+						//If there hasn't been a car even reported and we haven't filled the window with data
+						//start collection window data
 						if(window[2]==0 && !reported){
 							gettingWindow = true;
 						} else{
 							gettingWindow = false;
 						}
+
+						//If we haven't reported an event and were not collection window data
             if (!reported && !gettingWindow) {
+								//sort the window so window[1] is median
 								for(int i = 0; i < 3; i++){
 									int smallestNumber = window[i];
 									int index = i;
@@ -71,16 +83,19 @@ int main() {
 									window[i] = temp;
 								}
 								cout << directionAverage << " " << window[0] << " " << window[1]<< " " << window[2] << endl;
+								//window[1] is the median now, use this to check for direction
                 if (window[1] > directionAverage) {
                     cout << "Car in! ----------------------------------------------" << endl;
                 } else {
                     cout << "Car out! -----------------------------------------------" << endl;
                 }
+								//mark event as recorded and clear window
                 reported = true;
 								window[0] = 0;
 								window[1] = 0;
 								window[2] = 0;
             } else if(gettingWindow) {
+							//Were collection window data now, fill the first 0 entry encontured. 
 							if(window[0] == 0){
 								window[0] = previousValue;
 							} else if (window[1] == 0){
@@ -115,3 +130,10 @@ int main() {
 
     return 0;
 }
+
+
+
+//A median filter works by collecting data around the spike of detection, this ensures that we
+// grab the data that is most likely not part of the average or an outlier. While a good median 
+// filter will use around 9 or 7 elements, because the magnitude can switch so quickly 3 is a 
+// good number to use.
