@@ -6,8 +6,8 @@ using namespace std;
 
 int main() {
     const int CALIBRATION_COUNT = 40;
-    const double ALPHA = 0.025;
-    const int THRESHOLD = 11;
+    const double ALPHA = 0.005;
+    const int THRESHOLD = 8;
     const int TIMEOUT = 20;
 		
 		// Pointer for the axies in question. axis what we look at to detect a car, directionAxis is what we
@@ -20,7 +20,7 @@ int main() {
 		//the window of points for the median filter
 		int window[3]= {0};
 
-    ifstream in("data.txt");
+    ifstream in("data/data2.txt");
 
     int x, y, z;
 
